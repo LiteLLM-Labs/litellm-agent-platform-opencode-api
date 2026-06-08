@@ -1,0 +1,10 @@
+[project]
+name = "litellm-agent-platform-opencode-api"
+version = "0.1.0"
+description = "URL provider for creating OpenCode-backed LiteLLM Agent Platform sessions"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
