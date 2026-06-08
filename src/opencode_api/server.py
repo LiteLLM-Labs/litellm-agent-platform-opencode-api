@@ -9,8 +9,9 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,60 +25,85 @@ DEFAULT_WORKSPACE_ROOT = Path("/tmp/lap-opencode")
 
 
 @dataclass
-class Auth:
-    type: str
-    username: str
-    password: str
-
-
-@dataclass
 class Session:
     id: str
-    sandbox_id: str
-    opencode_base_url: str
-    opencode_session_id: str
-    auth: Auth
-    workspace: str
+    base_url: str
+    password: str
+    workspace: Path
+    process: subprocess.Popen[bytes]
 
 
 class SessionManager:
-    def __init__(self, mock: bool = False):
-        self.mock = mock
-        self.processes: dict[str, subprocess.Popen[bytes]] = {}
+    def __init__(self) -> None:
+        self.sessions: dict[str, Session] = {}
+        self.latest_session_id: str | None = None
 
-    def create(self, request: dict[str, Any]) -> Session:
-        session_id = f"lapoc_{secrets.token_hex(8)}"
-        port = int(request.get("port") or DEFAULT_OPENCODE_PORT)
+    def create(self, request: dict[str, Any]) -> dict[str, Any]:
+        port = int(request.get("port") or self.next_port())
         title = str(request.get("title") or "OpenCode session")
-        workspace = self.workspace_path(request, session_id)
+        workspace = self.workspace_path(request)
         password = secrets.token_urlsafe(24)
         base_url = f"http://127.0.0.1:{port}"
 
-        if self.mock:
-            opencode_session_id = f"mock_{session_id}"
-        else:
-            self.start_opencode(session_id, workspace, port, password)
-            opencode_session_id = self.create_opencode_session(base_url, title, password)
-
-        return Session(
+        process = self.start_opencode(workspace, port, password)
+        body = self.request_json(
+            "POST",
+            f"{base_url}/session",
+            {"title": title},
+            self.basic_auth("opencode", password),
+        )
+        session_id = self.required_id(body)
+        self.sessions[session_id] = Session(
             id=session_id,
-            sandbox_id=session_id,
-            opencode_base_url=base_url,
-            opencode_session_id=opencode_session_id,
-            auth=Auth(type="basic", username="opencode", password=password),
-            workspace=str(workspace),
+            base_url=base_url,
+            password=password,
+            workspace=workspace,
+            process=process,
+        )
+        self.latest_session_id = session_id
+        body.setdefault("sandbox_id", session_id)
+        body.setdefault("opencode_base_url", base_url)
+        body.setdefault("workspace", str(workspace))
+        return body
+
+    def send_message(self, session_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session = self.session(session_id)
+        return self.request_json(
+            "POST",
+            f"{session.base_url}/session/{session.id}/message",
+            request,
+            self.basic_auth("opencode", session.password),
+            timeout=120,
         )
 
-    def workspace_path(self, request: dict[str, Any], session_id: str) -> Path:
+    def event_stream(self) -> urllib.response.addinfourl:
+        session = self.session(self.latest_session_id)
+        request = urllib.request.Request(f"{session.base_url}/event", method="GET")
+        request.add_header("authorization", self.basic_auth("opencode", session.password))
+        request.add_header("accept", "text/event-stream")
+        return urllib.request.urlopen(request, timeout=120)
+
+    def session(self, session_id: str | None) -> Session:
+        if session_id is None:
+            raise RuntimeError("no OpenCode session has been created")
+        try:
+            return self.sessions[session_id]
+        except KeyError as error:
+            raise RuntimeError(f"unknown OpenCode session: {session_id}") from error
+
+    def workspace_path(self, request: dict[str, Any]) -> Path:
         value = request.get("workspace")
-        path = Path(str(value)) if value else DEFAULT_WORKSPACE_ROOT / session_id
+        path = Path(str(value)) if value else DEFAULT_WORKSPACE_ROOT / f"run_{secrets.token_hex(8)}"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def start_opencode(self, session_id: str, workspace: Path, port: int, password: str) -> None:
+    def next_port(self) -> int:
+        return int(os.getenv("OPENCODE_PORT", DEFAULT_OPENCODE_PORT)) + len(self.sessions)
+
+    def start_opencode(self, workspace: Path, port: int, password: str) -> subprocess.Popen[bytes]:
         binary = shutil.which("opencode")
         if binary is None:
-            raise RuntimeError("opencode binary not found; set OPENCODE_MOCK=1 for smoke tests")
+            raise RuntimeError("opencode binary not found in PATH")
 
         env = os.environ.copy()
         env["OPENCODE_SERVER_PASSWORD"] = password
@@ -88,20 +114,20 @@ class SessionManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        self.processes[session_id] = process
-        self.wait_for_health(f"http://127.0.0.1:{port}", process)
+        self.wait_until_reachable(f"http://127.0.0.1:{port}", process)
+        return process
 
-    def wait_for_health(self, base_url: str, process: subprocess.Popen[bytes]) -> None:
+    def wait_until_reachable(self, base_url: str, process: subprocess.Popen[bytes]) -> None:
         deadline = time.time() + 20
         while time.time() < deadline:
             if process.poll() is not None:
                 raise RuntimeError(f"opencode exited with status {process.returncode}")
-            if self.is_reachable(base_url):
+            if self.reachable(base_url):
                 return
             time.sleep(0.25)
         raise RuntimeError("timed out waiting for opencode server")
 
-    def is_reachable(self, base_url: str) -> bool:
+    def reachable(self, base_url: str) -> bool:
         try:
             urllib.request.urlopen(f"{base_url}/", timeout=2).close()
             return True
@@ -110,33 +136,27 @@ class SessionManager:
         except Exception:
             return False
 
-    def create_opencode_session(self, base_url: str, title: str, password: str) -> str:
-        body = self.request_json(
-            "POST",
-            f"{base_url}/session",
-            {"title": title},
-            self.basic_auth("opencode", password),
-        )
-        session_id = body.get("id")
-        if not isinstance(session_id, str) or not session_id:
-            raise RuntimeError("opencode /session response did not include id")
-        return session_id
-
     def request_json(
         self,
         method: str,
         url: str,
         body: dict[str, Any] | None,
-        auth: str | None,
+        auth: str,
+        timeout: int = 10,
     ) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
         request.add_header("content-type", "application/json")
-        if auth:
-            request.add_header("authorization", auth)
-        with urllib.request.urlopen(request, timeout=5) as response:
+        request.add_header("authorization", auth)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = response.read()
         return json.loads(payload.decode("utf-8") or "{}")
+
+    def required_id(self, body: dict[str, Any]) -> str:
+        session_id = body.get("id")
+        if not isinstance(session_id, str) or not session_id:
+            raise RuntimeError("opencode /session response did not include id")
+        return session_id
 
     def basic_auth(self, username: str, password: str) -> str:
         token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
@@ -147,22 +167,52 @@ class Handler(BaseHTTPRequestHandler):
     manager: SessionManager
 
     def do_GET(self) -> None:
-        if self.path == "/health":
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/health":
             self.write_json(HTTPStatus.OK, {"ok": True, "service": "opencode-api"})
+            return
+        if path == "/event":
+            if not self.authorized():
+                self.write_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            self.proxy_events()
             return
         self.write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path != "/sessions":
-            self.write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
+        path = urllib.parse.urlparse(self.path).path
         if not self.authorized():
             self.write_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
         try:
-            payload = self.read_json()
-            session = self.manager.create(payload)
-            self.write_json(HTTPStatus.CREATED, asdict(session))
+            if path == "/session":
+                self.write_json(HTTPStatus.CREATED, self.manager.create(self.read_json()))
+                return
+            prefix = "/session/"
+            suffix = "/message"
+            if path.startswith(prefix) and path.endswith(suffix):
+                session_id = path[len(prefix) : -len(suffix)]
+                self.write_json(
+                    HTTPStatus.OK,
+                    self.manager.send_message(session_id, self.read_json()),
+                )
+                return
+            self.write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except Exception as error:
+            self.write_json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+
+    def proxy_events(self) -> None:
+        try:
+            upstream = self.manager.event_stream()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            while True:
+                chunk = upstream.read(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
         except Exception as error:
             self.write_json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
 
@@ -194,10 +244,10 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
-def serve(host: str, port: int, mock: bool) -> ThreadingHTTPServer:
-    Handler.manager = SessionManager(mock=mock)
+def serve(host: str, port: int) -> ThreadingHTTPServer:
+    Handler.manager = SessionManager()
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"opencode-api listening on http://{host}:{port} mock={mock}", flush=True)
+    print(f"opencode-api listening on http://{host}:{port}", flush=True)
     server.serve_forever()
     return server
 
@@ -206,9 +256,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=os.getenv("HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", DEFAULT_PORT)))
-    parser.add_argument("--mock", action="store_true", default=os.getenv("OPENCODE_MOCK") == "1")
     args = parser.parse_args()
-    serve(args.host, args.port, args.mock)
+    serve(args.host, args.port)
 
 
 if __name__ == "__main__":
