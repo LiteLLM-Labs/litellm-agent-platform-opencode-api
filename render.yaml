@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: litellm-agent-platform-opencode-api
+    runtime: docker
+    repo: https://github.com/LiteLLM-Labs/litellm-agent-platform-opencode-api
+    branch: main
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: OPENCODE_API_KEY
+        sync: false
+      - key: OPENCODE_INFERENCE_BASE_URL
+        value: https://litellm-rust.onrender.com
+      - key: OPENCODE_INFERENCE_API_KEY
+        sync: false

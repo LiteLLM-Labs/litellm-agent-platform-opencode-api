@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8088
 DEFAULT_OPENCODE_PORT = 4096
 DEFAULT_WORKSPACE_ROOT = Path("/tmp/lap-opencode")
+INFERENCE_BASE_URL_ENV = "OPENCODE_INFERENCE_BASE_URL"
+INFERENCE_API_KEY_ENV = "OPENCODE_INFERENCE_API_KEY"
 
 
 @dataclass
@@ -107,6 +109,10 @@ class SessionManager:
 
         env = os.environ.copy()
         env["OPENCODE_SERVER_PASSWORD"] = password
+        if inference_base_url := os.getenv(INFERENCE_BASE_URL_ENV):
+            env["ANTHROPIC_BASE_URL"] = inference_base_url
+        if inference_api_key := os.getenv(INFERENCE_API_KEY_ENV):
+            env["ANTHROPIC_API_KEY"] = inference_api_key
         process = subprocess.Popen(
             [binary, "serve", "--hostname", "0.0.0.0", "--port", str(port)],
             cwd=workspace,

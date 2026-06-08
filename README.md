@@ -16,7 +16,7 @@ service as the OpenCode runtime `api_base`.
 ## Run
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... python3 -m opencode_api.server
+OPENCODE_INFERENCE_API_KEY=sk-ant-... python3 -m opencode_api.server
 ```
 
 If your shell has a broken global Node install, put a working Node/OpenCode path
@@ -24,14 +24,22 @@ first:
 
 ```bash
 PATH="$HOME/.nvm/versions/node/v20.19.5/bin:$PATH" \
-ANTHROPIC_API_KEY=sk-ant-... \
+OPENCODE_INFERENCE_API_KEY=sk-ant-... \
+python3 -m opencode_api.server
+```
+
+Point OpenCode at an Anthropic-compatible gateway:
+
+```bash
+OPENCODE_INFERENCE_BASE_URL=https://litellm-rust.onrender.com \
+OPENCODE_INFERENCE_API_KEY=sk-... \
 python3 -m opencode_api.server
 ```
 
 Require bearer auth for all runtime routes except `/health`:
 
 ```bash
-OPENCODE_API_KEY=sk-provider ANTHROPIC_API_KEY=sk-ant-... python3 -m opencode_api.server
+OPENCODE_API_KEY=sk-provider OPENCODE_INFERENCE_API_KEY=sk-ant-... python3 -m opencode_api.server
 ```
 
 ## Configure LAP
@@ -66,3 +74,13 @@ curl -sS -X POST http://127.0.0.1:8088/session \
 Today this starts local `opencode serve` processes. The next production step is
 to replace `SessionManager.start_opencode` with sandbox creation while keeping
 the public routes unchanged for LAP compatibility.
+
+## Render
+
+This repo includes a Dockerfile for Render. Set these environment variables on
+the Render service:
+
+- `OPENCODE_API_KEY`: bearer token LAP uses to call this provider
+- `OPENCODE_INFERENCE_BASE_URL`: Anthropic-compatible gateway base URL, for
+  example `https://litellm-rust.onrender.com`
+- `OPENCODE_INFERENCE_API_KEY`: key sent by OpenCode to that gateway
