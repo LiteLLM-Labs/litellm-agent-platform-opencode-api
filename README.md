@@ -36,6 +36,9 @@ OPENCODE_INFERENCE_API_KEY=sk-... \
 python3 -m opencode_api.server
 ```
 
+If the base URL does not end in `/v1`, the service appends `/v1` before passing
+it to OpenCode as `ANTHROPIC_BASE_URL`.
+
 Require bearer auth for all runtime routes except `/health`:
 
 ```bash

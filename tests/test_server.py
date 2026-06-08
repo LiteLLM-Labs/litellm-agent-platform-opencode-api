@@ -8,7 +8,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from opencode_api.server import Handler, SessionManager, ThreadingHTTPServer
+from opencode_api.server import Handler, SessionManager, ThreadingHTTPServer, anthropic_base_url
 
 
 class ServerTest(unittest.TestCase):
@@ -43,6 +43,16 @@ class ServerTest(unittest.TestCase):
                 server.server_close()
             finally:
                 os.environ["PATH"] = old_path
+
+    def test_inference_base_url_defaults_to_anthropic_v1_path(self):
+        self.assertEqual(
+            anthropic_base_url("https://litellm-rust.onrender.com"),
+            "https://litellm-rust.onrender.com/v1",
+        )
+        self.assertEqual(
+            anthropic_base_url("https://litellm-rust.onrender.com/v1"),
+            "https://litellm-rust.onrender.com/v1",
+        )
 
     def install_fake_opencode(self, directory: Path):
         script = directory / "opencode"

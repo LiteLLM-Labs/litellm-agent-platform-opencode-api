@@ -110,7 +110,7 @@ class SessionManager:
         env = os.environ.copy()
         env["OPENCODE_SERVER_PASSWORD"] = password
         if inference_base_url := os.getenv(INFERENCE_BASE_URL_ENV):
-            env["ANTHROPIC_BASE_URL"] = inference_base_url
+            env["ANTHROPIC_BASE_URL"] = anthropic_base_url(inference_base_url)
         if inference_api_key := os.getenv(INFERENCE_API_KEY_ENV):
             env["ANTHROPIC_API_KEY"] = inference_api_key
         process = subprocess.Popen(
@@ -256,6 +256,13 @@ def serve(host: str, port: int) -> ThreadingHTTPServer:
     print(f"opencode-api listening on http://{host}:{port}", flush=True)
     server.serve_forever()
     return server
+
+
+def anthropic_base_url(value: str) -> str:
+    base_url = value.rstrip("/")
+    if base_url.endswith("/v1"):
+        return base_url
+    return f"{base_url}/v1"
 
 
 def main() -> None:
