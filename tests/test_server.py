@@ -8,7 +8,14 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from opencode_api.server import Handler, SessionManager, ThreadingHTTPServer, anthropic_base_url
+from opencode_api.server import (
+    Handler,
+    SessionManager,
+    ThreadingHTTPServer,
+    agent_context_markdown,
+    anthropic_base_url,
+    session_context,
+)
 
 
 class ServerTest(unittest.TestCase):
@@ -49,6 +56,38 @@ class ServerTest(unittest.TestCase):
             anthropic_base_url("https://litellm-rust.onrender.com"),
             "https://litellm-rust.onrender.com/v1",
         )
+
+    def test_agent_context_markdown_uses_optional_fields(self):
+        content = agent_context_markdown(
+            {
+                "agent": {"id": "agent_123", "name": "Ops Agent"},
+                "system": "Always answer from LAP context.",
+                "model": "claude-sonnet-4-6",
+                "tools": [{"type": "bash"}],
+                "mcp_servers": [{"name": "platform"}],
+                "environment": {"repository": "https://github.com/acme/app"},
+            }
+        )
+
+        self.assertIn("Always answer from LAP context.", content)
+        self.assertIn("Ops Agent", content)
+        self.assertIn("claude-sonnet-4-6", content)
+        self.assertIn("https://github.com/acme/app", content)
+
+    def test_session_context_accepts_nested_resources(self):
+        context = session_context(
+            {
+                "title": "test",
+                "resources": {
+                    "system": "Nested instructions.",
+                    "agent": {"name": "Nested Agent"},
+                },
+            }
+        )
+
+        self.assertEqual(context["title"], "test")
+        self.assertEqual(context["system"], "Nested instructions.")
+        self.assertEqual(context["agent"]["name"], "Nested Agent")
         self.assertEqual(
             anthropic_base_url("https://litellm-rust.onrender.com/v1"),
             "https://litellm-rust.onrender.com/v1",

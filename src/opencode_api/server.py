@@ -44,6 +44,7 @@ class SessionManager:
         port = int(request.get("port") or self.next_port())
         title = str(request.get("title") or "OpenCode session")
         workspace = self.workspace_path(request)
+        self.write_agent_context(workspace, request)
         password = secrets.token_urlsafe(24)
         base_url = f"http://127.0.0.1:{port}"
 
@@ -98,6 +99,11 @@ class SessionManager:
         path = Path(str(value)) if value else DEFAULT_WORKSPACE_ROOT / f"run_{secrets.token_hex(8)}"
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def write_agent_context(self, workspace: Path, request: dict[str, Any]) -> None:
+        content = agent_context_markdown(session_context(request))
+        if content:
+            (workspace / "AGENTS.md").write_text(content, encoding="utf-8")
 
     def next_port(self) -> int:
         return int(os.getenv("OPENCODE_PORT", DEFAULT_OPENCODE_PORT)) + len(self.sessions)
@@ -263,6 +269,40 @@ def anthropic_base_url(value: str) -> str:
     if base_url.endswith("/v1"):
         return base_url
     return f"{base_url}/v1"
+
+
+def session_context(request: dict[str, Any]) -> dict[str, Any]:
+    resources = request.get("resources")
+    if isinstance(resources, dict):
+        merged = dict(request)
+        merged.update(resources)
+        return merged
+    return request
+
+
+def agent_context_markdown(context: dict[str, Any]) -> str:
+    sections: list[str] = []
+    agent = context.get("agent")
+    if isinstance(agent, dict):
+        name = agent.get("name")
+        agent_id = agent.get("id")
+        if name or agent_id:
+            sections.append(f"# Agent\n\nName: {name or ''}\nID: {agent_id or ''}".strip())
+    if system := context.get("system"):
+        sections.append(f"# Instructions\n\n{system}")
+    if model := context.get("model"):
+        sections.append(f"# Model\n\n{model}")
+    for key, title in [
+        ("tools", "Tools"),
+        ("mcp_servers", "MCP Servers"),
+        ("environment", "Environment"),
+    ]:
+        value = context.get(key)
+        if value not in (None, [], {}):
+            sections.append(f"# {title}\n\n```json\n{json.dumps(value, indent=2)}\n```")
+    if not sections:
+        return ""
+    return "\n\n".join(sections) + "\n"
 
 
 def main() -> None:
