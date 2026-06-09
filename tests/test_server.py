@@ -35,15 +35,19 @@ class ServerTest(unittest.TestCase):
                 self.assertIs(health["ok"], True)
 
                 session = request("POST", f"{base}/session", {"title": "test", "port": 4123})
-                self.assertEqual(session["id"], "ses_fake")
+                self.assertEqual(session["id"], "ses_4123")
                 self.assertEqual(session["opencode_base_url"], "http://127.0.0.1:4123")
+
+                replacement = request("POST", f"{base}/session", {"title": "replacement", "port": 4123})
+                self.assertEqual(replacement["id"], "ses_4123")
+                self.assertEqual(replacement["opencode_base_url"], "http://127.0.0.1:4123")
 
                 message = request(
                     "POST",
-                    f"{base}/session/ses_fake/message",
+                    f"{base}/session/ses_4123/message",
                     {"parts": [{"type": "text", "text": "hello"}]},
                 )
-                self.assertEqual(message["info"]["sessionID"], "ses_fake")
+                self.assertEqual(message["info"]["sessionID"], "ses_4123")
                 self.assertEqual(message["parts"][0]["text"], "hello")
 
                 server.shutdown()
@@ -113,7 +117,8 @@ class Handler(BaseHTTPRequestHandler):
             self.write({{"ok": True}})
             return
         if self.path == "/event":
-            payload = "data: {{\\"type\\":\\"session.idle\\",\\"properties\\":{{\\"sessionID\\":\\"ses_fake\\"}}}}\\n\\n".encode()
+            body = {{"type": "session.idle", "properties": {{"sessionID": f"ses_{{args.port}}"}}}}
+            payload = f"data: {{json.dumps(body)}}\\n\\n".encode()
             self.send_response(200)
             self.send_header("content-type", "text/event-stream")
             self.send_header("content-length", str(len(payload)))
@@ -127,10 +132,10 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length") or "0")
         body = json.loads(self.rfile.read(length).decode() or "{{}}")
         if self.path == "/session":
-            self.write({{"id": "ses_fake"}})
+            self.write({{"id": f"ses_{{args.port}}"}})
             return
-        if self.path == "/session/ses_fake/message":
-            self.write({{"info": {{"sessionID": "ses_fake"}}, "parts": body.get("parts", [])}})
+        if self.path == f"/session/ses_{{args.port}}/message":
+            self.write({{"info": {{"sessionID": f"ses_{{args.port}}"}}, "parts": body.get("parts", [])}})
             return
         self.send_response(404)
         self.end_headers()

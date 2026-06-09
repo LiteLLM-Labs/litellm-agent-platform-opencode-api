@@ -7,6 +7,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -39,35 +40,42 @@ class SessionManager:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
         self.latest_session_id: str | None = None
+        self.lock = threading.RLock()
 
     def create(self, request: dict[str, Any]) -> dict[str, Any]:
-        port = int(request.get("port") or self.next_port())
-        title = str(request.get("title") or "OpenCode session")
-        workspace = self.workspace_path(request)
-        self.write_agent_context(workspace, request)
-        password = secrets.token_urlsafe(24)
-        base_url = f"http://127.0.0.1:{port}"
+        with self.lock:
+            self.stop_all()
+            port = int(request.get("port") or self.next_port())
+            title = str(request.get("title") or "OpenCode session")
+            workspace = self.workspace_path(request)
+            self.write_agent_context(workspace, request)
+            password = secrets.token_urlsafe(24)
+            base_url = f"http://127.0.0.1:{port}"
 
-        process = self.start_opencode(workspace, port, password)
-        body = self.request_json(
-            "POST",
-            f"{base_url}/session",
-            {"title": title},
-            self.basic_auth("opencode", password),
-        )
-        session_id = self.required_id(body)
-        self.sessions[session_id] = Session(
-            id=session_id,
-            base_url=base_url,
-            password=password,
-            workspace=workspace,
-            process=process,
-        )
-        self.latest_session_id = session_id
-        body.setdefault("sandbox_id", session_id)
-        body.setdefault("opencode_base_url", base_url)
-        body.setdefault("workspace", str(workspace))
-        return body
+            process = self.start_opencode(workspace, port, password)
+            try:
+                body = self.request_json(
+                    "POST",
+                    f"{base_url}/session",
+                    {"title": title},
+                    self.basic_auth("opencode", password),
+                )
+                session_id = self.required_id(body)
+            except Exception:
+                self.stop_process(process)
+                raise
+            self.sessions[session_id] = Session(
+                id=session_id,
+                base_url=base_url,
+                password=password,
+                workspace=workspace,
+                process=process,
+            )
+            self.latest_session_id = session_id
+            body.setdefault("sandbox_id", session_id)
+            body.setdefault("opencode_base_url", base_url)
+            body.setdefault("workspace", str(workspace))
+            return body
 
     def send_message(self, session_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session = self.session(session_id)
@@ -87,12 +95,13 @@ class SessionManager:
         return urllib.request.urlopen(request, timeout=120)
 
     def session(self, session_id: str | None) -> Session:
-        if session_id is None:
-            raise RuntimeError("no OpenCode session has been created")
-        try:
-            return self.sessions[session_id]
-        except KeyError as error:
-            raise RuntimeError(f"unknown OpenCode session: {session_id}") from error
+        with self.lock:
+            if session_id is None:
+                raise RuntimeError("no OpenCode session has been created")
+            try:
+                return self.sessions[session_id]
+            except KeyError as error:
+                raise RuntimeError(f"unknown OpenCode session: {session_id}") from error
 
     def workspace_path(self, request: dict[str, Any]) -> Path:
         value = request.get("workspace")
@@ -106,7 +115,23 @@ class SessionManager:
             (workspace / "AGENTS.md").write_text(content, encoding="utf-8")
 
     def next_port(self) -> int:
-        return int(os.getenv("OPENCODE_PORT", DEFAULT_OPENCODE_PORT)) + len(self.sessions)
+        return int(os.getenv("OPENCODE_PORT", DEFAULT_OPENCODE_PORT))
+
+    def stop_all(self) -> None:
+        for session in list(self.sessions.values()):
+            self.stop_process(session.process)
+        self.sessions.clear()
+        self.latest_session_id = None
+
+    def stop_process(self, process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
     def start_opencode(self, workspace: Path, port: int, password: str) -> subprocess.Popen[bytes]:
         binary = shutil.which("opencode")
